@@ -1,0 +1,87 @@
+name: TP2 DAST - Scan OWASP ZAP sur DVWA
+
+permissions:
+  contents: read
+  issues: write   # ← indispensable pour créer/éditer une issue
+
+on:
+  push:
+    branches: [ master ]
+  workflow_dispatch:
+
+jobs:
+  dast:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Installer Docker Compose plugin
+        run: |
+          if ! docker compose version >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y docker-compose-plugin
+          fi
+          docker compose version
+
+      # 1) Cloner DVWA
+      - name: Cloner DVWA
+        run: |
+          git clone https://github.com/digininja/DVWA.git
+          ls -la DVWA
+
+      # 2) Démarrer DVWA
+      - name: Démarrer DVWA (Docker Compose)
+        working-directory: DVWA
+        run: |
+          docker compose up -d
+          docker compose ps
+          docker ps
+
+      # 3) Détecter automatiquement le port hôte mappé sur 80/tcp
+      - name: Détecter le port DVWA
+        id: dvwa_port
+        working-directory: DVWA
+        run: |
+          PORT=$(docker compose port dvwa 80 | awk -F: '{print $2}')
+          if [ -z "$PORT" ]; then
+            CID=$(docker ps -q --filter "name=dvwa")
+            PORT=$(docker port "$CID" 80/tcp | awk -F: '{print $2}')
+          fi
+          echo "Port détecté: ${PORT:-80}"
+          echo "target=http://127.0.0.1:${PORT:-80}" >> "$GITHUB_OUTPUT"
+
+      # 4) Attendre que DVWA réponde (HTTP 200/301/302)
+      - name: Attendre disponibilité DVWA
+        run: |
+          TARGET="${{ steps.dvwa_port.outputs.target }}"
+          echo "Target: $TARGET"
+          for i in {1..40}; do
+            code=$(curl -s -o /dev/null -w "%{http_code}" "$TARGET" || echo "000")
+            echo "Tentative $i -> HTTP $code"
+            if [ "$code" = "200" ] || [ "$code" = "301" ] || [ "$code" = "302" ]; then
+              echo "✅ DVWA est disponible"
+              exit 0
+            fi
+            sleep 3
+          done
+          echo "❌ DVWA indisponible"
+          docker compose -f DVWA/docker-compose.yml ps || true
+          docker ps -a || true
+          exit 1
+
+      # 5) Scan DAST ZAP (baseline)
+      - name: Lancer OWASP ZAP Baseline Scan
+        uses: zaproxy/action-baseline@v0.14.0
+        with:
+          target: "${{ steps.dvwa_port.outputs.target }}"
+          cmd_options: "-a -d"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # 6) Nettoyage
+      - name: Arrêt des conteneurs
+        if: always()
+        working-directory: DVWA
+        run: docker compose down
