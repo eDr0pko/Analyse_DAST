@@ -1,91 +1,74 @@
-name: TP2 DAST - Scan OWASP ZAP sur DVWA
+name: DAST Scan - Generic Repo
 
 permissions:
   contents: read
-  issues: write   # ← indispensable pour créer/éditer une issue
+  issues: write
 
 on:
-  push:
-    branches:
-      - main
-  pull_request:
-    branches:
-      - main
   workflow_dispatch:
+    inputs:
+      repo_url:
+        description: "URL du dépôt Git à scanner"
+        required: true
+        default: "https://github.com/eDr0pko/Analyse_SAST-SCA.git"
 
 jobs:
   dast:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Installer Docker Compose plugin
+      # 1) Cloner le repo cible depuis l'input
+      - name: Cloner le dépôt cible
         run: |
-          if ! docker compose version >/dev/null 2>&1; then
-            sudo apt-get update
-            sudo apt-get install -y docker-compose-plugin
-          fi
-          docker compose version
+          git clone ${{ github.event.inputs.repo_url }} target_repo
+          ls -la target_repo
 
-      # 1) Cloner DVWA
-      - name: Cloner DVWA
-        run: |
-          git clone https://github.com/digininja/DVWA.git
-          ls -la DVWA
+      # 2) Installer Python
+      - name: Installer Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
 
-      # 2) Démarrer DVWA
-      - name: Démarrer DVWA (Docker Compose)
-        working-directory: DVWA
+      # 3) Installer les dépendances Python si elles existent
+      - name: Installer les dépendances
+        working-directory: target_repo
         run: |
-          docker compose up -d
-          docker compose ps
-          docker ps
+          python3 -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
-      # 3) Détecter automatiquement le port hôte mappé sur 80/tcp
-      - name: Détecter le port DVWA
-        id: dvwa_port
-        working-directory: DVWA
+      # 4) Démarrer un serveur local (si projet statique ou simple)
+      - name: Démarrer le serveur
+        working-directory: target_repo
         run: |
-          PORT=$(docker compose port dvwa 80 | awk -F: '{print $2}')
-          if [ -z "$PORT" ]; then
-            CID=$(docker ps -q --filter "name=dvwa")
-            PORT=$(docker port "$CID" 80/tcp | awk -F: '{print $2}')
-          fi
-          echo "Port détecté: ${PORT:-80}"
-          echo "target=http://127.0.0.1:${PORT:-80}" >> "$GITHUB_OUTPUT"
+          nohup python3 -m http.server 8000 & 
+          sleep 5
 
-      # 4) Attendre que DVWA réponde (HTTP 200/301/302)
-      - name: Attendre disponibilité DVWA
+      # 5) Vérifier que le serveur répond
+      - name: Vérifier disponibilité
         run: |
-          TARGET="${{ steps.dvwa_port.outputs.target }}"
-          echo "Target: $TARGET"
-          for i in {1..40}; do
-            code=$(curl -s -o /dev/null -w "%{http_code}" "$TARGET" || echo "000")
+          for i in {1..20}; do
+            code=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8000)
             echo "Tentative $i -> HTTP $code"
             if [ "$code" = "200" ] || [ "$code" = "301" ] || [ "$code" = "302" ]; then
-              echo "✅ DVWA est disponible"
+              echo "✅ Serveur en ligne"
               exit 0
             fi
             sleep 3
           done
-          echo "❌ DVWA indisponible"
-          docker compose -f DVWA/docker-compose.yml ps || true
-          docker ps -a || true
+          echo "❌ Le serveur ne répond pas"
           exit 1
 
-      # 5) Scan DAST ZAP (baseline)
-      - name: Lancer OWASP ZAP Baseline Scan
+      # 6) Scan OWASP ZAP (baseline)
+      - name: Scanner avec OWASP ZAP
         uses: zaproxy/action-baseline@v0.14.0
         with:
-          target: "${{ steps.dvwa_port.outputs.target }}"
+          target: "http://127.0.0.1:8000"
           cmd_options: "-a -d"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # 6) Nettoyage
-      - name: Arrêt des conteneurs
+      # 7) Nettoyage du serveur
+      - name: Arrêter le serveur
         if: always()
-        working-directory: DVWA
-        run: docker compose down
+        run: |
+          pkill -f "http.server" || true
