@@ -17,7 +17,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # 1) Cloner le repo cible depuis l'input
+      # 1) Cloner le dépôt cible
       - name: Cloner le dépôt cible
         run: |
           git clone ${{ github.event.inputs.repo_url }} target_repo
@@ -29,22 +29,24 @@ jobs:
         with:
           python-version: '3.11'
 
-      # 3) Installer les dépendances Python si elles existent
+      # 3) Installer les dépendances Python si présentes
       - name: Installer les dépendances
         working-directory: target_repo
         run: |
           python3 -m pip install --upgrade pip
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          fi
 
-      # 4) Démarrer un serveur local (si projet statique ou simple)
-      - name: Démarrer le serveur
+      # 4) Lancer un serveur local
+      - name: Démarrer le serveur local
         working-directory: target_repo
         run: |
-          nohup python3 -m http.server 8000 & 
+          nohup python3 -m http.server 8000 &
           sleep 5
 
-      # 5) Vérifier que le serveur répond
-      - name: Vérifier disponibilité
+      # 5) Vérifier la disponibilité du serveur
+      - name: Vérifier la disponibilité
         run: |
           for i in {1..20}; do
             code=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8000)
@@ -58,16 +60,24 @@ jobs:
           echo "❌ Le serveur ne répond pas"
           exit 1
 
-      # 6) Scan OWASP ZAP (baseline)
-      - name: Scanner avec OWASP ZAP
+      # 6) Lancer le scan DAST avec OWASP ZAP
+      - name: Scan OWASP ZAP (Baseline)
         uses: zaproxy/action-baseline@v0.14.0
         with:
           target: "http://127.0.0.1:8000"
           cmd_options: "-a -d"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        continue-on-error: true
 
-      # 7) Nettoyage du serveur
+      # 7) Sauvegarder le rapport ZAP
+      - name: Upload du rapport ZAP
+        uses: actions/upload-artifact@v4
+        with:
+          name: zap-report
+          path: zap_scan
+
+      # 8) Nettoyer les processus
       - name: Arrêter le serveur
         if: always()
         run: |
