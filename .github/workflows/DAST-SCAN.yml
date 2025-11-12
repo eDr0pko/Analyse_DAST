@@ -10,7 +10,7 @@ on:
       repo_url:
         description: "URL du dépôt Git à scanner"
         required: true
-        default: "https://github.com/eDr0pko/Analyse_SAST-SCA.git"
+        default: "https://github.com/MaelleSop/War_Game_Securite_Applicative"
 
 jobs:
   dast:
